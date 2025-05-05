@@ -1,3 +1,4 @@
+import base64
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -8,7 +9,9 @@ from openai import OpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+from PIL import Image
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_core.messages import HumanMessage
 
 load_dotenv(dotenv_path=".env.local")
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
@@ -16,6 +19,11 @@ CX_ID= os.getenv("CX_ID")
 CUSTOM_SEARCH_API_KEY = os.getenv("CUSTOM_SEARCH_API_KEY")
 IMAGE_COUNT = int(os.getenv("IMAGE_COUNT", "10"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+vision_model = ChatOpenAI(model="gpt-4o", max_tokens=100)
+
+# Directory to save images
+IMAGE_DIR = "images"
+os.makedirs(IMAGE_DIR, exist_ok=True)
 
 app = FastAPI()
 
@@ -70,6 +78,47 @@ def fetch_image_urls(query, api_key, cx_id, num_results=10):
             
     return image_urls[:num_results]
 
+# Function to download an image
+def download_image(url, filename):
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            with open(filename, "wb") as f:
+                f.write(response.content)
+            return True
+        else:
+            print(f"Failed to download {url}: Status {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"Error downloading {url}: {e}")
+        return False
+
+# Function to encode image to base64
+def encode_image(image_path):
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode("utf-8")
+    
+# Function to generate description for an image using GPT-4o
+def generate_image_description(image_path):
+    if not os.path.exists(image_path):
+        return None
+    base64_image = encode_image(image_path)
+    message = HumanMessage(
+        content=[
+            {"type": "text", "text": "Describe this image in a short sentence."},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+            }
+        ]
+    )
+    try:
+        response = vision_model.invoke([message])
+        return response.content
+    except Exception as e:
+        print(f"Error generating description for {image_path}: {e}")
+        return None
+
 def fetch_image_data(image_urls, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
     image_data = []
@@ -96,13 +145,31 @@ def fetch_image_data(image_urls, openai_api_key):
     return image_data
 
 # Function to score similarity using LangChain
-def fetch_sorted_image_urls(prompt, image_data):
+def fetch_sorted_image_urls(prompt, image_urls):
     try:
         embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
         sorted_image_urls = []
-        # Extract descriptions
-        descriptions = [item["description"] for item in image_data]
 
+        # Step 2: Download images
+        image_data = []
+        for i, url in enumerate(image_urls):
+            filename = os.path.join(IMAGE_DIR, f"image_{i}.jpg")
+            if download_image(url, filename):
+                image_data.append({"url": url, "path": filename})
+            else:
+                print(f"Skipping {url} due to download failure.")
+
+        # Step 3: Generate descriptions
+        for item in image_data:
+            description = generate_image_description(item["path"])
+            if description:
+                item["description"] = description
+            else:
+                item["description"] = ""
+                print(f"No description for {item['path']}.")
+
+        descriptions = [item["description"] for item in image_data if item["description"]]
+        
         # Generate embeddings
         prompt_embedding = embeddings.embed_query(prompt)
         description_embeddings = embeddings.embed_documents(descriptions)
@@ -112,7 +179,7 @@ def fetch_sorted_image_urls(prompt, image_data):
 
         # Create results list
         results = [
-            {"url": item["url"], "description": item["description"], "similarity": sim}
+            {"url": item["url"], "description": item["description"], "path": item["path"], "similarity": sim}
             for item, sim in zip(image_data, similarities)
         ]
 
@@ -132,10 +199,8 @@ def search_images(prompt: str):
     try:     
         # Fetch image URLs
         image_urls = fetch_image_urls(prompt, CUSTOM_SEARCH_API_KEY, CX_ID, IMAGE_COUNT)
-        
-        image_data = fetch_image_data(image_urls, OPENAI_API_KEY)
-        
-        sorted_image_urls = fetch_sorted_image_urls(prompt, image_data)
+              
+        sorted_image_urls = fetch_sorted_image_urls(prompt, image_urls)
                               
         return sorted_image_urls
     except requests.exceptions.RequestException as e:
@@ -153,5 +218,4 @@ async def search_endpoint(request: SearchRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
+    uvicorn.run(app, host="172.86.88.47", port=8000)
