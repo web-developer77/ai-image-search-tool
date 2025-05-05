@@ -15,7 +15,7 @@ PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 CX_ID= os.getenv("CX_ID")
 CUSTOM_SEARCH_API_KEY = os.getenv("CUSTOM_SEARCH_API_KEY")
 IMAGE_COUNT = int(os.getenv("IMAGE_COUNT", "10"))
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")# Convert to int with default value of 10
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 
@@ -120,7 +120,6 @@ def fetch_sorted_image_urls(prompt, image_data):
         sorted_results = sorted(results, key=lambda x: x["similarity"], reverse=True)
         
         for item in sorted_results:
-            print(item["url"])
             sorted_image_urls.append(item["url"])
         
         return sorted_image_urls     
