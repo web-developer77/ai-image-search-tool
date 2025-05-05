@@ -70,10 +70,10 @@ def fetch_image_urls(query, api_key, cx_id, num_results=10):
             
     return image_urls[:num_results]
 
-def fetch_descriptions(image_urls, openai_api_key):
+def fetch_image_data(image_urls, openai_api_key):
     client = OpenAI(api_key=openai_api_key)
-    descriptions = []
-    
+    image_data = []
+            
     for url in image_urls:
         try:
             response = client.chat.completions.create(
@@ -89,100 +89,56 @@ def fetch_descriptions(image_urls, openai_api_key):
                 ],
                 max_tokens=200
             )
-            descriptions.append(response.choices[0].message.content)
+            image_data.append({ "url": url, "description": response.choices[0].message.content })
         except Exception as e:
-            descriptions.append("")
+            image_data.append({ "url": url, "description": "" })
             
-    return descriptions
+    return image_data
 
 # Function to score similarity using LangChain
-def score_similarity(prompt, descriptions):
+def fetch_sorted_image_urls(prompt, image_data):
     try:
         embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
-        vector_store = FAISS.from_texts(
-            texts=descriptions,
-            embedding=embeddings,
-            metadatas=[{"index": i} for i in range(len(descriptions))]
-        )
-        # Perform similarity search for the prompt
-        similar_docs = vector_store.similarity_search_with_score(prompt, k=len(descriptions))
-        
-        # Print the similarity scores
-        for doc, score in similar_docs:
-            similarity = 1 - score  # Convert FAISS distance to similarity
-            print(f"Description: {doc.page_content}")
-            print(f"Similarity: {similarity:.4f}\n")
+        sorted_image_urls = []
+        # Extract descriptions
+        descriptions = [item["description"] for item in image_data]
 
-        # Find the most similar description
-        most_similar_doc = similar_docs[0][0].page_content
-        most_similar_score = 1 - similar_docs[0][1]
-        print(f"Most similar description: {most_similar_doc} (Similarity: {most_similar_score:.4f})")
+        # Generate embeddings
+        prompt_embedding = embeddings.embed_query(prompt)
+        description_embeddings = embeddings.embed_documents(descriptions)
+
+        # Calculate cosine similarity
+        similarities = cosine_similarity([prompt_embedding], description_embeddings)[0]
+
+        # Create results list
+        results = [
+            {"url": item["url"], "description": item["description"], "similarity": sim}
+            for item, sim in zip(image_data, similarities)
+        ]
+
+        # Sort results by similarity (descending)
+        sorted_results = sorted(results, key=lambda x: x["similarity"], reverse=True)
         
-        return similar_docs
+        for item in sorted_results:
+            print(item["url"])
+            sorted_image_urls.append(item["url"])
         
+        return sorted_image_urls     
         
-        # prompt_embedding = embeddings.embed_query(prompt)
-        # print("" + prompt_embedding)
-        # scores = []
-        # valid_descriptions = []
-        
-        # for desc in descriptions:
-        #     if desc:  # Only score non-empty descriptions
-        #         desc_embedding = embeddings.embed_query(desc)
-        #         score = cosine_similarity([prompt_embedding], [desc_embedding])[0][0]
-        #         scores.append(score)
-        #         valid_descriptions.append(desc)
-        #     else:
-        #         scores.append(0.0)
-        #         valid_descriptions.append("")
-                
-        # return valid_descriptions, scores
     except Exception as e:
         print(f"Error computing similarity: {e}")
-        return descriptions, [0.0] * len(descriptions)
-
-# def get_unique_urls(image_urls):
-#     seen_urls = set()
-#     seen_domains = set()
-#     unique_urls = []
-    
-#     for url in image_urls:
-#         # Check for exact URL duplicates
-#         if url.lower() not in seen_urls:
-#             # Extract domain to avoid near-duplicates from same site
-#             domain = urlparse(url).netloc
-#             if domain not in seen_domains:
-#                 try:
-#                     # Validate URL accessibility
-#                     response = requests.head(url, timeout=5)
-#                     if response.status_code == 200 and "image" in response.headers.get("content-type", "").lower():
-#                         unique_urls.append(url)
-#                         seen_urls.add(url.lower())
-#                         seen_domains.add(domain)
-#                 except requests.RequestException:
-#                     continue
-                    
-#     return unique_urls
+        return image_data
 
 def search_images(prompt: str): 
     try:     
         # Fetch image URLs
         image_urls = fetch_image_urls(prompt, CUSTOM_SEARCH_API_KEY, CX_ID, IMAGE_COUNT)
         
-        descriptions = fetch_descriptions(image_urls, OPENAI_API_KEY)
+        image_data = fetch_image_data(image_urls, OPENAI_API_KEY)
         
-        similar_docs = score_similarity(prompt, descriptions)
-        
-        print(similar_docs)
-        
-        
-                                         
-        # Sort image URLs based on similarity scores
-        # ranked_pairs = sorted(zip(image_urls, scores), key=lambda x: x[1], reverse=True)
-        # sorted_urls = [url[0] for url in ranked_pairs]
-        
-                    
-        return image_urls
+        sorted_image_urls = fetch_sorted_image_urls(prompt, image_data)
+                              
+        return sorted_image_urls
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=str(e))
     
